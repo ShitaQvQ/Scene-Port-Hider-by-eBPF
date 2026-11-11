@@ -30,9 +30,36 @@ jobs:
 
       - name: Install host tools
         run: |
-          sudo sed -i 's|http://archive.ubuntu.com|http://azure.archive.ubuntu.com|g' /etc/apt/sources.list
-          sudo apt update
-          sudo apt install -y curl unzip make git clang llvm lld tar xxd zip pkg-config autoconf automake libtool bzip2 xz-utils
+          set -euo pipefail
+
+          # 让 APT 遇到坏镜像/DNS 解析失败时快速失败并切换，而不是长时间卡住
+          echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99ci-retry
+          echo 'Acquire::http::Timeout "20";' | sudo tee -a /etc/apt/apt.conf.d/99ci-retry
+          echo 'Acquire::https::Timeout "20";' | sudo tee -a /etc/apt/apt.conf.d/99ci-retry
+          echo 'DPkg::Lock::Timeout "120";' | sudo tee -a /etc/apt/apt.conf.d/99ci-retry
+
+          # 不要主动切到 azure 镜像；日志中 azure.archive.ubuntu.com 正是 DNS 解析失败的域名之一。
+          # 如确实需要绕过 runner 的 mirrorlist，可取消下面这行注释：
+          # echo 'http://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt
+
+          sudo apt-get update || true
+
+          for i in $(seq 1 8); do
+            echo "::group::apt-get install attempt $i"
+            if sudo apt-get install -y --fix-missing \
+                curl unzip make git clang llvm lld tar xxd zip pkg-config \
+                autoconf automake libtool bzip2 xz-utils; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            echo "Attempt $i failed. Retrying after $((i * 10))s..."
+            sleep $((i * 10))
+            sudo apt-get update || true
+          done
+
+          echo "apt-get install failed after retries"
+          exit 1
 
       - name: Install bpftool
         run: |
